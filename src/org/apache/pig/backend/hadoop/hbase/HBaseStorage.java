@@ -16,31 +16,8 @@
  */
 package org.apache.pig.backend.hadoop.hbase;
 
-import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.UndeclaredThrowableException;
-import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.NavigableMap;
-import java.util.Properties;
-
-import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.CommandLineParser;
-import org.apache.commons.cli.GnuParser;
-import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.Option;
-import org.apache.commons.cli.OptionBuilder;
-import org.apache.commons.cli.Options;
-import org.apache.commons.cli.ParseException;
+import com.google.common.collect.Lists;
+import org.apache.commons.cli.*;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -48,19 +25,9 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.filter.BinaryComparator;
-import org.apache.hadoop.hbase.filter.ColumnPrefixFilter;
+import org.apache.hadoop.hbase.filter.*;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
-import org.apache.hadoop.hbase.filter.FamilyFilter;
-import org.apache.hadoop.hbase.filter.Filter;
-import org.apache.hadoop.hbase.filter.FilterList;
-import org.apache.hadoop.hbase.filter.QualifierFilter;
-import org.apache.hadoop.hbase.filter.RegexStringComparator;
-import org.apache.hadoop.hbase.filter.RowFilter;
-import org.apache.hadoop.hbase.filter.WhileMatchFilter;
-import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.TableInputFormat;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
 import org.apache.hadoop.hbase.mapreduce.TableOutputFormat;
@@ -68,23 +35,10 @@ import org.apache.hadoop.hbase.mapreduce.TableSplit;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapreduce.InputFormat;
-import org.apache.hadoop.mapreduce.InputSplit;
-import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.OutputFormat;
-import org.apache.hadoop.mapreduce.RecordReader;
-import org.apache.hadoop.mapreduce.RecordWriter;
+import org.apache.hadoop.mapreduce.*;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.pig.CollectableLoadFunc;
-import org.apache.pig.LoadCaster;
-import org.apache.pig.LoadFunc;
-import org.apache.pig.LoadPushDown;
-import org.apache.pig.LoadStoreCaster;
-import org.apache.pig.OrderedLoadFunc;
-import org.apache.pig.ResourceSchema;
+import org.apache.pig.*;
 import org.apache.pig.ResourceSchema.ResourceFieldSchema;
-import org.apache.pig.StoreFuncInterface;
-import org.apache.pig.StoreResources;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigSplit;
 import org.apache.pig.backend.hadoop.executionengine.shims.HadoopShims;
 import org.apache.pig.backend.hadoop.hbase.HBaseTableInputFormat.HBaseTableIFBuilder;
@@ -94,7 +48,6 @@ import org.apache.pig.data.DataBag;
 import org.apache.pig.data.DataByteArray;
 import org.apache.pig.data.DataType;
 import org.apache.pig.data.Tuple;
-import org.apache.pig.data.TupleFactory;
 import org.apache.pig.impl.PigContext;
 import org.apache.pig.impl.logicalLayer.FrontendException;
 import org.apache.pig.impl.util.ObjectSerializer;
@@ -102,7 +55,16 @@ import org.apache.pig.impl.util.UDFContext;
 import org.apache.pig.impl.util.Utils;
 import org.joda.time.DateTime;
 
-import com.google.common.collect.Lists;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.UndeclaredThrowableException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.*;
+import java.util.Map.Entry;
 
 /**
  * A HBase implementation of LoadFunc and StoreFunc.
@@ -181,6 +143,8 @@ public class HBaseStorage extends LoadFunc implements StoreFuncInterface, LoadPu
     private boolean includeTimestamp_;
     private boolean includeTombstone_;
 
+    private boolean includeCellTimestamp_;
+
     protected transient byte[] gt_;
     protected transient byte[] gte_;
     protected transient byte[] lt_;
@@ -215,6 +179,7 @@ public class HBaseStorage extends LoadFunc implements StoreFuncInterface, LoadPu
         validOptions_.addOption("timestamp", true, "Record must have timestamp equal to this value");
         validOptions_.addOption("includeTimestamp", false, "Record will include the timestamp after the rowkey on store (rowkey, timestamp, ...)");
         validOptions_.addOption("includeTombstone", false, "Record will include a tombstone marker on store after the rowKey and timestamp (if included) (rowkey, [timestamp,] tombstone, ...)");
+        validOptions_.addOption("includeCellTimestamp", true, "Return timestamp in millis with long type for each cell. Timesatamp goes before cell value.");
     }
 
     /**
@@ -261,6 +226,7 @@ public class HBaseStorage extends LoadFunc implements StoreFuncInterface, LoadPu
      * <li>-includeTimestamp= Record will include the timestamp after the rowkey on store (rowkey, timestamp, ...)
      * <li>-includeTombstone= Record will include a tombstone marker on store after the rowKey and timestamp (if included) (rowkey, [timestamp,] tombstone, ...)
      * <li>-caster=(HBaseBinaryConverter|Utf8StorageConverter) Utf8StorageConverter is the default
+     * <li>-includeCellTimestamp each cell would get store timestamp in millis. Timestamp goes before cell value
      * To be used with extreme caution, since this could result in data loss
      * (see http://hbase.apache.org/book.html#perf.hbase.client.putwal).
      * </ul>
@@ -274,7 +240,7 @@ public class HBaseStorage extends LoadFunc implements StoreFuncInterface, LoadPu
             configuredOptions_ = parser_.parse(validOptions_, optsArr);
         } catch (ParseException e) {
             HelpFormatter formatter = new HelpFormatter();
-            formatter.printHelp( "[-loadKey] [-gt] [-gte] [-lt] [-lte] [-regex] [-cacheBlocks] [-caching] [-caster] [-noWAL] [-limit] [-delim] [-ignoreWhitespace] [-minTimestamp] [-maxTimestamp] [-timestamp] [-includeTimestamp] [-includeTombstone]", validOptions_ );
+            formatter.printHelp( "[-loadKey] [-gt] [-gte] [-lt] [-lte] [-regex] [-cacheBlocks] [-caching] [-caster] [-noWAL] [-limit] [-delim] [-ignoreWhitespace] [-minTimestamp] [-maxTimestamp] [-timestamp] [-includeTimestamp] [-includeTombstone] [-includeCellTimestamp]", validOptions_ );
             throw e;
         }
 
@@ -363,6 +329,11 @@ public class HBaseStorage extends LoadFunc implements StoreFuncInterface, LoadPu
             if ("true".equalsIgnoreCase(value) || "".equalsIgnoreCase(value) || value == null ) {
                 includeTombstone_ = true;
             }
+        }
+
+        includeCellTimestamp_ = false;
+        if(configuredOptions_.hasOption("includeCellTimestamp")){
+            includeCellTimestamp_ = true;
         }
 
         initScan();
@@ -642,75 +613,13 @@ public class HBaseStorage extends LoadFunc implements StoreFuncInterface, LoadPu
     public Tuple getNext() throws IOException {
         try {
             if (reader.nextKeyValue()) {
-                ImmutableBytesWritable rowKey = (ImmutableBytesWritable) reader
-                .getCurrentKey();
-                Result result = (Result) reader.getCurrentValue();
-
-                int tupleSize = columnInfo_.size();
-
-                // use a map of families -> qualifiers with the most recent
-                // version of the cell. Fetching multiple vesions could be a
-                // useful feature.
-                NavigableMap<byte[], NavigableMap<byte[], byte[]>> resultsMap =
-                        result.getNoVersionMap();
-
-                if (loadRowKey_){
-                    tupleSize++;
-                }
-                Tuple tuple=TupleFactory.getInstance().newTuple(tupleSize);
-
-                int startIndex=0;
-                if (loadRowKey_){
-                    tuple.set(0, new DataByteArray(rowKey.get()));
-                    startIndex++;
-                }
-                for (int i = 0;i < columnInfo_.size(); ++i){
-                    int currentIndex = startIndex + i;
-
-                    ColumnInfo columnInfo = columnInfo_.get(i);
-                    if (columnInfo.isColumnMap()) {
-                        // It's a column family so we need to iterate and set all
-                        // values found
-                        NavigableMap<byte[], byte[]> cfResults =
-                                resultsMap.get(columnInfo.getColumnFamily());
-                        Map<String, DataByteArray> cfMap =
-                                new HashMap<String, DataByteArray>();
-
-                        if (cfResults != null) {
-                            for (byte[] quantifier : cfResults.keySet()) {
-                                // We need to check against the prefix filter to
-                                // see if this value should be included. We can't
-                                // just rely on the server-side filter, since a
-                                // user could specify multiple CF filters for the
-                                // same CF.
-                                if (columnInfo.getColumnPrefix() == null ||
-                                        columnInfo.hasPrefixMatch(quantifier)) {
-
-                                    byte[] cell = cfResults.get(quantifier);
-                                    DataByteArray value =
-                                            cell == null ? null : new DataByteArray(cell);
-                                    cfMap.put(Bytes.toString(quantifier), value);
-                                }
-                            }
-                        }
-                        tuple.set(currentIndex, cfMap);
-                    } else {
-                        // It's a column so set the value
-                        byte[] cell=result.getValue(columnInfo.getColumnFamily(),
-                                                    columnInfo.getColumnName());
-                        DataByteArray value =
-                                cell == null ? null : new DataByteArray(cell);
-                        tuple.set(currentIndex, value);
-                    }
-                }
-
-                if (LOG.isDebugEnabled()) {
-                    for (int i = 0; i < tuple.size(); i++) {
-                        LOG.debug("tuple value:" + tuple.get(i));
-                    }
-                }
-
-                return tuple;
+                return
+                HBaseResultParser.builder()
+                        .columnInfo(columnInfo_)
+                        .includeCellTimeStamp(includeCellTimestamp_)
+                        .loadRowKey(loadRowKey_)
+                        .build()
+                        .parse(reader);
             }
         } catch (InterruptedException e) {
             throw new IOException(e);
